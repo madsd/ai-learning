@@ -1,0 +1,23 @@
+# .NET build artifacts
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+
+# VS Code settings (but keep mcp.json)
+.vscode/*
+!.vscode/mcp.json
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# NuGet packages
+packages/
+*.nupkg
