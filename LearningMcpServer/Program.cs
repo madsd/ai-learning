@@ -1,125 +1,72 @@
-using LearningMcpServer;
-using LearningMcpServer.Tools;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol;
+using LearningMcpServer.Tools;
+using LearningMcpServer;
 
 /// <summary>
 /// Main entry point for the Learning MCP Server.
 /// Provides stdio-based MCP (Model Context Protocol) server with tools for weather, file operations, and math.
+/// Now using the ModelContextProtocol .NET SDK for improved maintainability and protocol compliance.
 /// </summary>
 class Program
 {
     /// <summary>
     /// Main entry point for the application.
     /// </summary>
-    /// <param name="args">Command line arguments</param>
+    /// <param name="args">Command line arguments. Use --debug for verbose logging.</param>
     static async Task Main(string[] args)
     {
-        // Set up console cancellation handling for graceful shutdown
-        using var cancellationTokenSource = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true; // Prevent immediate termination
-            cancellationTokenSource.Cancel();
-        };
-
-        // Configure logging
-        using var loggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder.AddConsole(options =>
-            {
-                options.LogToStandardErrorThreshold = LogLevel.Information;
-            })
-            .SetMinimumLevel(LogLevel.Information);
-            
-            // Enable debug logging if requested
-            if (args.Contains("--debug"))
-            {
-                builder.SetMinimumLevel(LogLevel.Debug);
-            }
-        });
-
-        var logger = loggerFactory.CreateLogger<Program>();
+        // Print startup banner
+        Console.WriteLine("========================================");
+        Console.WriteLine("    Learning MCP Server v1.0.0");
+        Console.WriteLine("    Model Context Protocol Server");
+        Console.WriteLine("    (Using ModelContextProtocol .NET SDK)");
+        Console.WriteLine("========================================");
+        Console.WriteLine();
 
         try
         {
-            // Display startup banner
-            await Console.Error.WriteLineAsync("========================================");
-            await Console.Error.WriteLineAsync("    Learning MCP Server v1.0.0");
-            await Console.Error.WriteLineAsync("    Model Context Protocol Server");
-            await Console.Error.WriteLineAsync("========================================");
-            await Console.Error.WriteLineAsync();
-
-            // Get repository root (current directory or specified path)
-            var repositoryRoot = Environment.CurrentDirectory;
-            if (args.Length > 0 && !args[0].StartsWith("--"))
+            // Create host builder with proper MCP server configuration
+            var builder = Host.CreateApplicationBuilder(args);
+            
+            // Configure logging to stderr as recommended by MCP protocol
+            builder.Logging.AddConsole(consoleLogOptions =>
             {
-                repositoryRoot = Path.GetFullPath(args[0]);
+                // Configure all logs to go to stderr per MCP spec
+                consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
+            });
+            
+            // Configure logging level based on debug flag
+            if (args.Contains("--debug"))
+            {
+                builder.Logging.SetMinimumLevel(LogLevel.Debug);
+            }
+            else
+            {
+                builder.Logging.SetMinimumLevel(LogLevel.Information);
             }
 
-            logger.LogInformation("Repository root: {RepositoryRoot}", repositoryRoot);
+            // Add MCP server with stdio transport and tools
+            builder.Services
+                .AddMcpServer()
+                .WithStdioServerTransport()  // This is crucial for stdio communication
+                .WithTools<WeatherTool>()    // Migrated weather tool
+                .WithTools<MathTool>();      // Migrated math tool
 
-            // Initialize tool registry
-            var toolRegistry = new ToolRegistry();
+            // Build and run the host
+            var host = builder.Build();
             
-            // Register all tools
-            RegisterTools(toolRegistry, repositoryRoot, logger);
-
-            // Create and start the MCP server
-            var serverLogger = loggerFactory.CreateLogger<McpServer>();
-            var server = new McpServer(toolRegistry, serverLogger);
+            Console.WriteLine("Learning MCP Server v1.0.0 - Ready for connections");
             
-            // Handle graceful shutdown
-            cancellationTokenSource.Token.Register(() => server.Stop());
-
-            logger.LogInformation("Starting MCP server...");
-            await server.StartAsync(cancellationTokenSource.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            logger.LogInformation("Shutdown completed gracefully");
+            // Start the MCP server using the SDK hosting model
+            await host.RunAsync();
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Fatal error occurred");
-            Environment.ExitCode = 1;
+            Console.WriteLine($"Error starting MCP server: {ex.Message}");
+            Environment.Exit(1);
         }
-        finally
-        {
-            await Console.Error.WriteLineAsync("Learning MCP Server stopped.");
-        }
-    }
-
-    /// <summary>
-    /// Registers all available tools in the tool registry.
-    /// </summary>
-    /// <param name="toolRegistry">The tool registry to register tools with</param>
-    /// <param name="repositoryRoot">The repository root directory for file operations</param>
-    /// <param name="logger">Logger for registration messages</param>
-    private static void RegisterTools(ToolRegistry toolRegistry, string repositoryRoot, ILogger logger)
-    {
-        logger.LogInformation("Registering tools...");
-
-        // Register WeatherTool
-        var weatherTool = new WeatherTool();
-        toolRegistry.RegisterTool(weatherTool);
-        logger.LogInformation("Registered tool: {ToolName}", weatherTool.Name);
-
-        // Register FileSummaryTool
-        var fileSummaryTool = new FileSummaryTool(repositoryRoot);
-        toolRegistry.RegisterTool(fileSummaryTool);
-        logger.LogInformation("Registered tool: {ToolName}", fileSummaryTool.Name);
-
-        // Register MarkdownHeadingsTool
-        var markdownTool = new MarkdownHeadingsTool(repositoryRoot);
-        toolRegistry.RegisterTool(markdownTool);
-        logger.LogInformation("Registered tool: {ToolName}", markdownTool.Name);
-
-        // Register MathTool
-        var mathTool = new MathTool();
-        toolRegistry.RegisterTool(mathTool);
-        logger.LogInformation("Registered tool: {ToolName}", mathTool.Name);
-
-        logger.LogInformation("Tool registration completed. Total tools: {ToolCount}", 
-            toolRegistry.GetAllTools().Count());
     }
 }

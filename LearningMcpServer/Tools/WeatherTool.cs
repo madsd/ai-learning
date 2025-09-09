@@ -1,77 +1,56 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.ComponentModel;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Server;
 
 namespace LearningMcpServer.Tools;
 
 /// <summary>
 /// Provides deterministic mock weather data based on city name hash.
 /// </summary>
-public class WeatherTool : ITool
+[McpServerToolType]
+public class WeatherTool
 {
-    /// <inheritdoc/>
-    public string Name => "weather";
+    private readonly ILogger<WeatherTool> _logger;
 
-    /// <inheritdoc/>
-    public string Description => "Get deterministic mock weather information for a city. Returns temperature, condition, humidity, wind speed, and last updated time.";
-
-    /// <inheritdoc/>
-    public JsonElement InputSchema => JsonSerializer.SerializeToElement(new
+    public WeatherTool(ILogger<WeatherTool> logger)
     {
-        type = "object",
-        properties = new
-        {
-            city = new
-            {
-                type = "string",
-                description = "The name of the city to get weather for"
-            }
-        },
-        required = new[] { "city" }
-    });
-
-    /// <summary>
-    /// Represents weather data.
-    /// </summary>
-    public class WeatherData
-    {
-        [JsonPropertyName("city")]
-        public string City { get; set; } = string.Empty;
-
-        [JsonPropertyName("temperatureC")]
-        public int TemperatureC { get; set; }
-
-        [JsonPropertyName("condition")]
-        public string Condition { get; set; } = string.Empty;
-
-        [JsonPropertyName("humidityPct")]
-        public int HumidityPct { get; set; }
-
-        [JsonPropertyName("windKph")]
-        public double WindKph { get; set; }
-
-        [JsonPropertyName("lastUpdatedUtc")]
-        public DateTime LastUpdatedUtc { get; set; }
+        _logger = logger;
     }
 
-    /// <inheritdoc/>
-    public async Task<object> ExecuteAsync(JsonElement arguments)
+    /// <summary>
+    /// Get deterministic mock weather information for a city.
+    /// </summary>
+    /// <param name="city">The name of the city to get weather for</param>
+    /// <returns>Weather information including temperature, condition, humidity, wind speed, and last updated time</returns>
+    [McpServerTool]
+    [Description("Get deterministic mock weather information for a city. Returns temperature, condition, humidity, wind speed, and last updated time.")]
+    public WeatherData GetWeather([Description("The name of the city to get weather for")] string city)
     {
-        await Task.CompletedTask; // Make async to satisfy interface
-
-        if (!arguments.TryGetProperty("city", out var cityElement))
+        var startTime = DateTime.UtcNow;
+        
+        try
         {
-            throw new ArgumentException("Missing required parameter 'city'");
-        }
+            _logger.LogInformation("Weather tool called for city: {City}", city);
+            
+            if (string.IsNullOrWhiteSpace(city))
+            {
+                throw new ArgumentException("City name cannot be empty", nameof(city));
+            }
 
-        var city = cityElement.GetString();
-        if (string.IsNullOrWhiteSpace(city))
+            var weather = GenerateWeatherData(city);
+
+            var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogInformation("Weather tool completed in {ElapsedMs}ms for city: {City}", elapsedMs, city);
+
+            return weather;
+        }
+        catch (Exception ex)
         {
-            throw new ArgumentException("City name cannot be empty");
+            _logger.LogError(ex, "Error in weather tool for city: {City}", city);
+            throw;
         }
-
-        return GenerateWeatherData(city);
     }
 
     /// <summary>
@@ -110,5 +89,18 @@ public class WeatherTool : ITool
             WindKph = Math.Round(windSpeed, 1),
             LastUpdatedUtc = baseDate.AddDays(dayOffset).AddHours(hourOffset).AddMinutes(minuteOffset)
         };
+    }
+
+    /// <summary>
+    /// Represents weather data.
+    /// </summary>
+    public class WeatherData
+    {
+        public string City { get; set; } = string.Empty;
+        public int TemperatureC { get; set; }
+        public string Condition { get; set; } = string.Empty;
+        public int HumidityPct { get; set; }
+        public double WindKph { get; set; }
+        public DateTime LastUpdatedUtc { get; set; }
     }
 }

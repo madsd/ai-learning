@@ -1,177 +1,125 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.ComponentModel;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Server;
 
 namespace LearningMcpServer.Tools;
 
 /// <summary>
 /// Performs basic mathematical operations with input validation.
 /// </summary>
-public class MathTool : ITool
+[McpServerToolType]
+public class MathTool
 {
-    /// <inheritdoc/>
-    public string Name => "math";
+    private readonly ILogger<MathTool> _logger;
 
-    /// <inheritdoc/>
-    public string Description => "Perform basic mathematical operations: add, subtract, multiply, divide. Includes input validation and prevents division by zero.";
-
-    /// <inheritdoc/>
-    public JsonElement InputSchema => JsonSerializer.SerializeToElement(new
+    public MathTool(ILogger<MathTool> logger)
     {
-        type = "object",
-        properties = new
-        {
-            operation = new
-            {
-                type = "string",
-                @enum = new[] { "add", "subtract", "multiply", "divide" },
-                description = "The mathematical operation to perform"
-            },
-            a = new
-            {
-                type = "number",
-                description = "The first number"
-            },
-            b = new
-            {
-                type = "number",
-                description = "The second number"
-            }
-        },
-        required = new[] { "operation", "a", "b" }
-    });
-
-    /// <summary>
-    /// Represents the result of a mathematical operation.
-    /// </summary>
-    public class MathResult
-    {
-        [JsonPropertyName("operation")]
-        public string Operation { get; set; } = string.Empty;
-
-        [JsonPropertyName("a")]
-        public double A { get; set; }
-
-        [JsonPropertyName("b")]
-        public double B { get; set; }
-
-        [JsonPropertyName("result")]
-        public double Result { get; set; }
-
-        [JsonPropertyName("expression")]
-        public string Expression { get; set; } = string.Empty;
+        _logger = logger;
     }
 
-    /// <inheritdoc/>
-    public async Task<object> ExecuteAsync(JsonElement arguments)
+    /// <summary>
+    /// Add two numbers together.
+    /// </summary>
+    /// <param name="a">First number</param>
+    /// <param name="b">Second number</param>
+    /// <returns>Sum of the two numbers</returns>
+    [McpServerTool]
+    [Description("Add two numbers together")]
+    public MathResult Add([Description("First number")] double a, [Description("Second number")] double b)
     {
-        await Task.CompletedTask; // Make async to satisfy interface
-
-        // Validate and extract operation
-        if (!arguments.TryGetProperty("operation", out var operationElement))
-        {
-            throw new ArgumentException("Missing required parameter 'operation'");
-        }
-
-        var operation = operationElement.GetString();
-        if (string.IsNullOrWhiteSpace(operation))
-        {
-            throw new ArgumentException("Operation cannot be empty");
-        }
-
-        // Validate and extract first number
-        if (!arguments.TryGetProperty("a", out var aElement))
-        {
-            throw new ArgumentException("Missing required parameter 'a'");
-        }
-
-        if (!aElement.TryGetDouble(out var a))
-        {
-            throw new ArgumentException("Parameter 'a' must be a valid number");
-        }
-
-        // Validate and extract second number
-        if (!arguments.TryGetProperty("b", out var bElement))
-        {
-            throw new ArgumentException("Missing required parameter 'b'");
-        }
-
-        if (!bElement.TryGetDouble(out var b))
-        {
-            throw new ArgumentException("Parameter 'b' must be a valid number");
-        }
-
-        // Check for invalid numbers (NaN, Infinity)
-        if (!IsValidNumber(a))
-        {
-            throw new ArgumentException("Parameter 'a' contains an invalid number (NaN or Infinity)");
-        }
-
-        if (!IsValidNumber(b))
-        {
-            throw new ArgumentException("Parameter 'b' contains an invalid number (NaN or Infinity)");
-        }
-
-        // Perform the operation
-        var result = PerformOperation(operation.ToLowerInvariant(), a, b);
-
+        _logger.LogInformation("Math add: {A} + {B}", a, b);
+        var result = a + b;
         return new MathResult
         {
-            Operation = operation.ToLowerInvariant(),
+            Operation = "add",
             A = a,
             B = b,
             Result = result,
-            Expression = FormatExpression(operation.ToLowerInvariant(), a, b, result)
+            Expression = $"{a} + {b} = {result}"
         };
     }
 
     /// <summary>
-    /// Checks if a number is valid (not NaN or Infinity).
+    /// Subtract the second number from the first.
     /// </summary>
-    /// <param name="value">The number to check</param>
-    /// <returns>True if the number is valid, false otherwise</returns>
-    private static bool IsValidNumber(double value)
+    /// <param name="a">First number</param>
+    /// <param name="b">Second number</param>
+    /// <returns>Difference of the two numbers</returns>
+    [McpServerTool]
+    [Description("Subtract the second number from the first")]
+    public MathResult Subtract([Description("First number")] double a, [Description("Second number")] double b)
     {
-        return !double.IsNaN(value) && !double.IsInfinity(value);
-    }
-
-    /// <summary>
-    /// Performs the specified mathematical operation.
-    /// </summary>
-    /// <param name="operation">The operation to perform</param>
-    /// <param name="a">The first operand</param>
-    /// <param name="b">The second operand</param>
-    /// <returns>The result of the operation</returns>
-    private static double PerformOperation(string operation, double a, double b)
-    {
-        return operation switch
+        _logger.LogInformation("Math subtract: {A} - {B}", a, b);
+        var result = a - b;
+        return new MathResult
         {
-            "add" => a + b,
-            "subtract" => a - b,
-            "multiply" => a * b,
-            "divide" => b == 0 ? throw new DivideByZeroException("Division by zero is not allowed") : a / b,
-            _ => throw new ArgumentException($"Unsupported operation: {operation}. Supported operations are: add, subtract, multiply, divide")
+            Operation = "subtract",
+            A = a,
+            B = b,
+            Result = result,
+            Expression = $"{a} - {b} = {result}"
         };
     }
 
     /// <summary>
-    /// Formats the mathematical expression as a string.
+    /// Multiply two numbers together.
     /// </summary>
-    /// <param name="operation">The operation performed</param>
-    /// <param name="a">The first operand</param>
-    /// <param name="b">The second operand</param>
-    /// <param name="result">The result of the operation</param>
-    /// <returns>A formatted expression string</returns>
-    private static string FormatExpression(string operation, double a, double b, double result)
+    /// <param name="a">First number</param>
+    /// <param name="b">Second number</param>
+    /// <returns>Product of the two numbers</returns>
+    [McpServerTool]
+    [Description("Multiply two numbers together")]
+    public MathResult Multiply([Description("First number")] double a, [Description("Second number")] double b)
     {
-        var operatorSymbol = operation switch
+        _logger.LogInformation("Math multiply: {A} * {B}", a, b);
+        var result = a * b;
+        return new MathResult
         {
-            "add" => "+",
-            "subtract" => "-",
-            "multiply" => "*",
-            "divide" => "/",
-            _ => "?"
+            Operation = "multiply",
+            A = a,
+            B = b,
+            Result = result,
+            Expression = $"{a} * {b} = {result}"
         };
+    }
 
-        return $"{a} {operatorSymbol} {b} = {result}";
+    /// <summary>
+    /// Divide the first number by the second.
+    /// </summary>
+    /// <param name="a">Dividend</param>
+    /// <param name="b">Divisor</param>
+    /// <returns>Quotient of the division</returns>
+    [McpServerTool]
+    [Description("Divide the first number by the second")]
+    public MathResult Divide([Description("Dividend (number to be divided)")] double a, [Description("Divisor (number to divide by)")] double b)
+    {
+        _logger.LogInformation("Math divide: {A} / {B}", a, b);
+        
+        if (Math.Abs(b) < double.Epsilon)
+        {
+            throw new DivideByZeroException("Division by zero is not allowed");
+        }
+        
+        var result = a / b;
+        return new MathResult
+        {
+            Operation = "divide",
+            A = a,
+            B = b,
+            Result = result,
+            Expression = $"{a} / {b} = {result}"
+        };
+    }
+
+    /// <summary>
+    /// Result of a mathematical operation.
+    /// </summary>
+    public class MathResult
+    {
+        public string Operation { get; set; } = string.Empty;
+        public double A { get; set; }
+        public double B { get; set; }
+        public double Result { get; set; }
+        public string Expression { get; set; } = string.Empty;
     }
 }
