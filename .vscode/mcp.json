@@ -1,0 +1,8 @@
+{
+  "learning-mcp-server": {
+    "command": "dotnet",
+    "args": ["run", "--project", "./LearningMcpServer"],
+    "env": {},
+    "description": "Learning MCP Server with weather, file operations, and math tools"
+  }
+}
