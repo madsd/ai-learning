@@ -1,189 +1,222 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.ComponentModel;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Server;
 
 namespace LearningMcpServer.Tools;
 
 /// <summary>
-/// Extracts markdown headings from text content.
+/// Extracts markdown headings from files or text content.
 /// </summary>
-public class MarkdownHeadingsTool : ITool
+[McpServerToolType]
+public class MarkdownHeadingsTool
 {
+    private readonly ILogger<MarkdownHeadingsTool> _logger;
     private readonly string _repositoryRoot;
 
-    /// <summary>
-    /// Initializes a new instance of the MarkdownHeadingsTool.
-    /// </summary>
-    /// <param name="repositoryRoot">The root directory of the repository to restrict file access</param>
-    public MarkdownHeadingsTool(string repositoryRoot)
+    public MarkdownHeadingsTool(ILogger<MarkdownHeadingsTool> logger)
     {
-        _repositoryRoot = Path.GetFullPath(repositoryRoot);
+        _logger = logger;
+        _repositoryRoot = GetRepositoryRoot();
     }
 
-    /// <inheritdoc/>
-    public string Name => "markdown_headings";
-
-    /// <inheritdoc/>
-    public string Description => "Extract all markdown headings (levels 1-6) from a markdown file or text content. Returns heading text, level, and line number.";
-
-    /// <inheritdoc/>
-    public JsonElement InputSchema => JsonSerializer.SerializeToElement(new
-    {
-        type = "object",
-        properties = new
-        {
-            filePath = new
-            {
-                type = "string",
-                description = "Path to the markdown file to extract headings from (optional if content is provided)"
-            },
-            content = new
-            {
-                type = "string",
-                description = "Direct markdown content to extract headings from (optional if filePath is provided)"
-            }
-        }
-    });
-
     /// <summary>
-    /// Represents a markdown heading.
+    /// Extract markdown headings from a file.
     /// </summary>
-    public class MarkdownHeading
+    /// <param name="filePath">Path to the markdown file to extract headings from</param>
+    /// <returns>List of headings with text, level, and line numbers</returns>
+    [McpServerTool]
+    [Description("Extract all markdown headings (levels 1-6) from a markdown file. Returns heading text, level, and line number.")]
+    public List<HeadingInfo> ExtractHeadingsFromFile([Description("Path to the markdown file to extract headings from")] string filePath)
     {
-        [JsonPropertyName("text")]
-        public string Text { get; set; } = string.Empty;
-
-        [JsonPropertyName("level")]
-        public int Level { get; set; }
-
-        [JsonPropertyName("line")]
-        public int Line { get; set; }
-    }
-
-    /// <inheritdoc/>
-    public async Task<object> ExecuteAsync(JsonElement arguments)
-    {
-        string content;
+        var startTime = DateTime.UtcNow;
         
-        // Check if we have direct content or need to read from file
-        if (arguments.TryGetProperty("content", out var contentElement) && !string.IsNullOrWhiteSpace(contentElement.GetString()))
+        try
         {
-            content = contentElement.GetString()!;
-        }
-        else if (arguments.TryGetProperty("filePath", out var filePathElement) && !string.IsNullOrWhiteSpace(filePathElement.GetString()))
-        {
-            var filePath = filePathElement.GetString()!;
+            _logger.LogInformation("Markdown headings tool called for file: {FilePath}", filePath);
             
-            // Normalize path and prevent path traversal
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                throw new ArgumentException("File path cannot be empty", nameof(filePath));
+            }
+
+            // Normalize and validate the file path to prevent path traversal
             var normalizedPath = NormalizePath(filePath);
             var fullPath = Path.Combine(_repositoryRoot, normalizedPath);
             
-            // Ensure the resolved path is still under repository root
-            var resolvedPath = Path.GetFullPath(fullPath);
-            if (!resolvedPath.StartsWith(_repositoryRoot, StringComparison.OrdinalIgnoreCase))
+            // Ensure the file is within the repository root
+            if (!IsPathWithinRepository(fullPath))
             {
-                throw new UnauthorizedAccessException("Access denied: Path traversal attempt detected");
+                throw new UnauthorizedAccessException("Access denied: File path is outside the repository");
             }
 
-            // Check if file exists
-            if (!File.Exists(resolvedPath))
+            if (!File.Exists(fullPath))
             {
                 throw new FileNotFoundException($"File not found: {normalizedPath}");
             }
 
-            content = await File.ReadAllTextAsync(resolvedPath);
-        }
-        else
-        {
-            throw new ArgumentException("Either 'content' or 'filePath' parameter must be provided");
-        }
+            var content = File.ReadAllText(fullPath);
+            var headings = ParseHeadingsFromText(content);
 
-        return ExtractHeadings(content);
+            var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogInformation("Markdown headings extraction completed in {ElapsedMs}ms for file: {FilePath}, found {HeadingCount} headings", elapsedMs, normalizedPath, headings.Count);
+
+            return headings;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in markdown headings tool for file: {FilePath}", filePath);
+            throw;
+        }
     }
 
     /// <summary>
-    /// Normalizes a file path to prevent path traversal attacks.
+    /// Extract markdown headings from text content.
     /// </summary>
-    /// <param name="path">The input path</param>
-    /// <returns>The normalized path</returns>
-    private static string NormalizePath(string path)
+    /// <param name="content">Direct markdown content to extract headings from</param>
+    /// <returns>List of headings with text, level, and line numbers</returns>
+    [McpServerTool]
+    [Description("Extract all markdown headings (levels 1-6) from markdown text content. Returns heading text, level, and line number.")]
+    public List<HeadingInfo> ExtractHeadingsFromContent([Description("Direct markdown content to extract headings from")] string content)
     {
-        // Remove any leading slashes or backslashes
-        path = path.TrimStart('/', '\\');
+        var startTime = DateTime.UtcNow;
         
-        // Normalize separators
-        path = path.Replace('\\', '/');
-        
-        // Remove any '..' components
-        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
-                       .Where(part => part != ".." && part != ".")
-                       .ToArray();
-        
-        return string.Join("/", parts);
+        try
+        {
+            _logger.LogInformation("Markdown headings tool called for direct content ({ContentLength} characters)", content?.Length ?? 0);
+            
+            if (string.IsNullOrEmpty(content))
+            {
+                return new List<HeadingInfo>();
+            }
+
+            var headings = ParseHeadingsFromText(content);
+
+            var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogInformation("Markdown headings extraction completed in {ElapsedMs}ms for content, found {HeadingCount} headings", elapsedMs, headings.Count);
+
+            return headings;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in markdown headings tool for content");
+            throw;
+        }
     }
 
-    /// <summary>
-    /// Extracts markdown headings from content.
-    /// </summary>
-    /// <param name="content">The markdown content to process</param>
-    /// <returns>Array of heading information</returns>
-    private static MarkdownHeading[] ExtractHeadings(string content)
+    private List<HeadingInfo> ParseHeadingsFromText(string content)
     {
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return Array.Empty<MarkdownHeading>();
-        }
-
-        var headings = new List<MarkdownHeading>();
+        var headings = new List<HeadingInfo>();
         var lines = content.Split('\n');
         
-        // Regex pattern for ATX headings (# ## ### etc.)
-        var atxPattern = new Regex(@"^(\#{1,6})\s+(.+)$", RegexOptions.Compiled);
+        // Regex for ATX-style headings (# ## ### etc.)
+        var atxRegex = new Regex(@"^(\#{1,6})\s+(.+)", RegexOptions.Compiled);
         
-        // Regex pattern for Setext headings (underlined with = or -)
-        var setextPattern = new Regex(@"^[\=\-]+\s*$", RegexOptions.Compiled);
-
         for (int i = 0; i < lines.Length; i++)
         {
             var line = lines[i].TrimEnd();
-            var lineNumber = i + 1; // 1-based line numbers
+            var match = atxRegex.Match(line);
             
-            // Check for ATX headings (# ## ### etc.)
-            var atxMatch = atxPattern.Match(line);
-            if (atxMatch.Success)
+            if (match.Success)
             {
-                var level = atxMatch.Groups[1].Value.Length;
-                var text = atxMatch.Groups[2].Value.Trim();
+                var level = match.Groups[1].Value.Length;
+                var text = match.Groups[2].Value.Trim();
                 
-                // Remove trailing #s if present
-                text = text.TrimEnd('#').Trim();
-                
-                headings.Add(new MarkdownHeading
+                headings.Add(new HeadingInfo
                 {
                     Text = text,
                     Level = level,
-                    Line = lineNumber
+                    Line = i + 1 // 1-based line numbering
                 });
             }
-            // Check for Setext headings (underlined with = or -)
-            else if (i > 0 && !string.IsNullOrWhiteSpace(line) && setextPattern.IsMatch(line))
+            // Check for Setext-style headings (underlined with = or -)
+            else if (i + 1 < lines.Length)
             {
-                var prevLine = lines[i - 1].Trim();
-                if (!string.IsNullOrWhiteSpace(prevLine))
+                var nextLine = lines[i + 1].Trim();
+                if (!string.IsNullOrWhiteSpace(line) && 
+                    (nextLine.All(c => c == '=') || nextLine.All(c => c == '-')) &&
+                    nextLine.Length >= 3)
                 {
-                    // = indicates level 1, - indicates level 2
-                    var level = line.Contains('=') ? 1 : 2;
-                    
-                    headings.Add(new MarkdownHeading
+                    var level = nextLine.All(c => c == '=') ? 1 : 2;
+                    headings.Add(new HeadingInfo
                     {
-                        Text = prevLine,
+                        Text = line.Trim(),
                         Level = level,
-                        Line = i // Previous line number (i is 0-based, so i+1-1 = i)
+                        Line = i + 1 // 1-based line numbering
                     });
                 }
             }
         }
+        
+        return headings;
+    }
 
-        return headings.ToArray();
+    private static string GetRepositoryRoot()
+    {
+        var currentDir = Directory.GetCurrentDirectory();
+        var dir = new DirectoryInfo(currentDir);
+        
+        while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, ".git")))
+        {
+            dir = dir.Parent;
+        }
+        
+        return dir?.FullName ?? currentDir;
+    }
+
+    private string NormalizePath(string path)
+    {
+        // Remove leading slashes and normalize separators
+        path = path.TrimStart('/', '\\');
+        path = path.Replace('\\', '/');
+        
+        // Resolve relative path components and prevent traversal
+        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var normalizedParts = new List<string>();
+        
+        foreach (var part in parts)
+        {
+            if (part == "." || string.IsNullOrWhiteSpace(part))
+            {
+                continue;
+            }
+            if (part == "..")
+            {
+                if (normalizedParts.Count > 0)
+                {
+                    normalizedParts.RemoveAt(normalizedParts.Count - 1);
+                }
+            }
+            else
+            {
+                normalizedParts.Add(part);
+            }
+        }
+        
+        return string.Join(Path.DirectorySeparatorChar, normalizedParts);
+    }
+
+    private bool IsPathWithinRepository(string fullPath)
+    {
+        try
+        {
+            var repositoryPath = Path.GetFullPath(_repositoryRoot);
+            var resolvedPath = Path.GetFullPath(fullPath);
+            return resolvedPath.StartsWith(repositoryPath, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Information about a markdown heading.
+    /// </summary>
+    public class HeadingInfo
+    {
+        public string Text { get; set; } = string.Empty;
+        public int Level { get; set; }
+        public int Line { get; set; }
     }
 }

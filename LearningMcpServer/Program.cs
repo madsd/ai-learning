@@ -48,12 +48,14 @@ class Program
                 builder.Logging.SetMinimumLevel(LogLevel.Information);
             }
 
-            // Add MCP server with stdio transport and tools
+            // Add MCP server with stdio transport and all migrated tools
             builder.Services
                 .AddMcpServer()
-                .WithStdioServerTransport()  // This is crucial for stdio communication
-                .WithTools<WeatherTool>()    // Migrated weather tool
-                .WithTools<MathTool>();      // Migrated math tool
+                .WithStdioServerTransport()        // Enable stdio communication
+                .WithTools<WeatherTool>()          // Weather information tool
+                .WithTools<MathTool>()             // Mathematical operations
+                .WithTools<FileSummaryTool>()      // File summarization
+                .WithTools<MarkdownHeadingsTool>();// Markdown headings extraction
 
             // Build and run the host
             var host = builder.Build();

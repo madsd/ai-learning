@@ -1,223 +1,235 @@
+using System.ComponentModel;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Server;
 
 namespace LearningMcpServer.Tools;
 
 /// <summary>
-/// Summarizes text files with size and binary content validation.
+/// Summarizes text file contents with size and binary content validation.
 /// </summary>
-public class FileSummaryTool : ITool
+[McpServerToolType]
+public class FileSummaryTool
 {
-    private const int MaxFileSizeBytes = 200 * 1024; // 200KB
-    private const int TargetSummaryWords = 200;
+    private readonly ILogger<FileSummaryTool> _logger;
     private readonly string _repositoryRoot;
+    private const long MaxFileSizeBytes = 200 * 1024; // 200KB
 
-    /// <summary>
-    /// Initializes a new instance of the FileSummaryTool.
-    /// </summary>
-    /// <param name="repositoryRoot">The root directory of the repository to restrict file access</param>
-    public FileSummaryTool(string repositoryRoot)
+    public FileSummaryTool(ILogger<FileSummaryTool> logger)
     {
-        _repositoryRoot = Path.GetFullPath(repositoryRoot);
+        _logger = logger;
+        _repositoryRoot = GetRepositoryRoot();
     }
 
-    /// <inheritdoc/>
-    public string Name => "file_summary";
-
-    /// <inheritdoc/>
-    public string Description => "Summarize the contents of a text file. Files must be under 200KB and contain text content only.";
-
-    /// <inheritdoc/>
-    public JsonElement InputSchema => JsonSerializer.SerializeToElement(new
+    /// <summary>
+    /// Summarize the contents of a text file.
+    /// </summary>
+    /// <param name="filePath">Path to the file to summarize (relative to repository root)</param>
+    /// <returns>File summary with statistics</returns>
+    [McpServerTool]
+    [Description("Summarize the contents of a text file. Files must be under 200KB and contain text content only.")]
+    public FileSummaryResult SummarizeFile([Description("Path to the file to summarize (relative to repository root)")] string filePath)
     {
-        type = "object",
-        properties = new
+        var startTime = DateTime.UtcNow;
+        
+        try
         {
-            filePath = new
+            _logger.LogInformation("File summary tool called for file: {FilePath}", filePath);
+            
+            if (string.IsNullOrWhiteSpace(filePath))
             {
-                type = "string",
-                description = "Path to the file to summarize (relative to repository root)"
+                throw new ArgumentException("File path cannot be empty", nameof(filePath));
             }
-        },
-        required = new[] { "filePath" }
-    });
 
-    /// <summary>
-    /// Represents a file summary result.
-    /// </summary>
-    public class FileSummaryResult
-    {
-        [JsonPropertyName("filePath")]
-        public string FilePath { get; set; } = string.Empty;
+            // Normalize and validate the file path to prevent path traversal
+            var normalizedPath = NormalizePath(filePath);
+            var fullPath = Path.Combine(_repositoryRoot, normalizedPath);
+            
+            // Ensure the file is within the repository root
+            if (!IsPathWithinRepository(fullPath))
+            {
+                throw new UnauthorizedAccessException("Access denied: File path is outside the repository");
+            }
 
-        [JsonPropertyName("summary")]
-        public string Summary { get; set; } = string.Empty;
+            if (!File.Exists(fullPath))
+            {
+                throw new FileNotFoundException($"File not found: {normalizedPath}");
+            }
 
-        [JsonPropertyName("wordCount")]
-        public int WordCount { get; set; }
+            // Check file size
+            var fileInfo = new FileInfo(fullPath);
+            if (fileInfo.Length > MaxFileSizeBytes)
+            {
+                throw new InvalidOperationException($"File is too large ({fileInfo.Length:N0} bytes). Maximum size is {MaxFileSizeBytes:N0} bytes (200KB)");
+            }
 
-        [JsonPropertyName("lineCount")]
-        public int LineCount { get; set; }
+            // Read and validate content
+            var content = File.ReadAllText(fullPath, Encoding.UTF8);
+            
+            if (IsBinaryContent(content))
+            {
+                throw new InvalidOperationException("File appears to contain binary data. Only text files are supported");
+            }
 
-        [JsonPropertyName("characterCount")]
-        public int CharacterCount { get; set; }
+            // Generate summary
+            var summary = GenerateSummary(content);
+            var wordCount = CountWords(content);
+            var lineCount = content.Split('\n').Length;
+
+            var result = new FileSummaryResult
+            {
+                FilePath = normalizedPath,
+                Summary = summary,
+                WordCount = wordCount,
+                LineCount = lineCount,
+                CharacterCount = content.Length
+            };
+
+            var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogInformation("File summary completed in {ElapsedMs}ms for file: {FilePath}", elapsedMs, normalizedPath);
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in file summary tool for file: {FilePath}", filePath);
+            throw;
+        }
     }
 
-    /// <inheritdoc/>
-    public async Task<object> ExecuteAsync(JsonElement arguments)
+    private static string GetRepositoryRoot()
     {
-        if (!arguments.TryGetProperty("filePath", out var filePathElement))
-        {
-            throw new ArgumentException("Missing required parameter 'filePath'");
-        }
-
-        var filePath = filePathElement.GetString();
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            throw new ArgumentException("File path cannot be empty");
-        }
-
-        // Normalize path and prevent path traversal
-        var normalizedPath = NormalizePath(filePath);
-        var fullPath = Path.Combine(_repositoryRoot, normalizedPath);
+        var currentDir = Directory.GetCurrentDirectory();
+        var dir = new DirectoryInfo(currentDir);
         
-        // Ensure the resolved path is still under repository root
-        var resolvedPath = Path.GetFullPath(fullPath);
-        if (!resolvedPath.StartsWith(_repositoryRoot, StringComparison.OrdinalIgnoreCase))
+        while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, ".git")))
         {
-            throw new UnauthorizedAccessException("Access denied: Path traversal attempt detected");
+            dir = dir.Parent;
         }
-
-        // Check if file exists
-        if (!File.Exists(resolvedPath))
-        {
-            throw new FileNotFoundException($"File not found: {normalizedPath}");
-        }
-
-        // Check file size
-        var fileInfo = new FileInfo(resolvedPath);
-        if (fileInfo.Length > MaxFileSizeBytes)
-        {
-            throw new InvalidOperationException($"File too large: {fileInfo.Length} bytes exceeds {MaxFileSizeBytes} byte limit");
-        }
-
-        // Read and validate content
-        var content = await File.ReadAllTextAsync(resolvedPath);
         
-        // Check if content appears to be binary
-        if (IsBinaryContent(content))
-        {
-            throw new InvalidOperationException("File appears to contain binary data and cannot be summarized");
-        }
-
-        // Generate summary
-        var summary = GenerateSummary(content);
-        var wordCount = CountWords(content);
-        var lineCount = content.Split('\n').Length;
-
-        return new FileSummaryResult
-        {
-            FilePath = normalizedPath,
-            Summary = summary,
-            WordCount = wordCount,
-            LineCount = lineCount,
-            CharacterCount = content.Length
-        };
+        return dir?.FullName ?? currentDir;
     }
 
-    /// <summary>
-    /// Normalizes a file path to prevent path traversal attacks.
-    /// </summary>
-    /// <param name="path">The input path</param>
-    /// <returns>The normalized path</returns>
-    private static string NormalizePath(string path)
+    private string NormalizePath(string path)
     {
-        // Remove any leading slashes or backslashes
+        // Remove leading slashes and normalize separators
         path = path.TrimStart('/', '\\');
-        
-        // Normalize separators
         path = path.Replace('\\', '/');
         
-        // Remove any '..' components
-        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
-                       .Where(part => part != ".." && part != ".")
-                       .ToArray();
+        // Resolve relative path components and prevent traversal
+        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var normalizedParts = new List<string>();
         
-        return string.Join("/", parts);
+        foreach (var part in parts)
+        {
+            if (part == "." || string.IsNullOrWhiteSpace(part))
+            {
+                continue;
+            }
+            if (part == "..")
+            {
+                if (normalizedParts.Count > 0)
+                {
+                    normalizedParts.RemoveAt(normalizedParts.Count - 1);
+                }
+            }
+            else
+            {
+                normalizedParts.Add(part);
+            }
+        }
+        
+        return string.Join(Path.DirectorySeparatorChar, normalizedParts);
     }
 
-    /// <summary>
-    /// Checks if content appears to be binary data.
-    /// </summary>
-    /// <param name="content">The content to check</param>
-    /// <returns>True if content appears binary, false otherwise</returns>
+    private bool IsPathWithinRepository(string fullPath)
+    {
+        try
+        {
+            var repositoryPath = Path.GetFullPath(_repositoryRoot);
+            var resolvedPath = Path.GetFullPath(fullPath);
+            return resolvedPath.StartsWith(repositoryPath, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool IsBinaryContent(string content)
     {
-        // Simple heuristic: check for null bytes and high ratio of non-printable characters
-        if (content.Contains('\0'))
-            return true;
-
-        var nonPrintableCount = content.Count(c => c < 32 && c != '\t' && c != '\n' && c != '\r');
-        var ratio = (double)nonPrintableCount / content.Length;
+        // Simple heuristic: if content contains null bytes or has a high ratio of non-printable characters
+        var sampleSize = Math.Min(8192, content.Length);
+        var sample = content.AsSpan(0, sampleSize);
         
-        return ratio > 0.1; // If more than 10% are non-printable, consider it binary
+        var nonPrintableCount = 0;
+        foreach (var c in sample)
+        {
+            if (c == '\0') return true; // Null byte indicates binary
+            if (char.IsControl(c) && c != '\r' && c != '\n' && c != '\t')
+            {
+                nonPrintableCount++;
+            }
+        }
+        
+        // If more than 5% of characters are non-printable control characters, consider it binary
+        return (double)nonPrintableCount / sampleSize > 0.05;
     }
 
-    /// <summary>
-    /// Generates a summary of the text content, clamped to approximately 200 words.
-    /// </summary>
-    /// <param name="content">The content to summarize</param>
-    /// <returns>A summary of the content</returns>
     private static string GenerateSummary(string content)
     {
-        if (string.IsNullOrWhiteSpace(content))
+        // Simple extractive summary - take first few sentences and key information
+        var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var sentences = new List<string>();
+        var wordCount = 0;
+        const int targetWords = 200;
+        
+        foreach (var line in lines)
         {
-            return "File is empty or contains only whitespace.";
-        }
-
-        // Split into sentences (simple approach)
-        var sentences = content.Split(new[] { '.', '!', '?' }, StringSplitOptions.RemoveEmptyEntries)
-                              .Select(s => s.Trim())
-                              .Where(s => !string.IsNullOrWhiteSpace(s))
-                              .ToList();
-
-        if (sentences.Count == 0)
-        {
-            // Fallback to words if no sentences found
-            var words = content.Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-            var wordCount = Math.Min(TargetSummaryWords, words.Length);
-            return string.Join(" ", words.Take(wordCount)) + (words.Length > wordCount ? "..." : "");
-        }
-
-        // Build summary by adding sentences until we approach the word limit
-        var summaryBuilder = new StringBuilder();
-        var currentWordCount = 0;
-
-        foreach (var sentence in sentences)
-        {
-            var sentenceWords = sentence.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            if (currentWordCount + sentenceWords.Length > TargetSummaryWords && summaryBuilder.Length > 0)
+            var trimmedLine = line.Trim();
+            if (string.IsNullOrEmpty(trimmedLine)) continue;
+            
+            // Split by sentence-ending punctuation
+            var lineSentences = trimmedLine.Split(new[] { '.', '!', '?' }, StringSplitOptions.RemoveEmptyEntries);
+            
+            foreach (var sentence in lineSentences)
             {
-                break;
+                var cleanSentence = sentence.Trim();
+                if (string.IsNullOrEmpty(cleanSentence)) continue;
+                
+                var sentenceWords = cleanSentence.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+                
+                if (wordCount + sentenceWords <= targetWords)
+                {
+                    sentences.Add(cleanSentence + ".");
+                    wordCount += sentenceWords;
+                }
+                else
+                {
+                    break;
+                }
             }
-
-            summaryBuilder.Append(sentence.Trim());
-            summaryBuilder.Append(". ");
-            currentWordCount += sentenceWords.Length;
+            
+            if (wordCount >= targetWords) break;
         }
-
-        var result = summaryBuilder.ToString().Trim();
-        return string.IsNullOrEmpty(result) ? "Content could not be summarized." : result;
+        
+        return sentences.Count > 0 ? string.Join(" ", sentences) : "File appears to be empty or contains no readable text.";
     }
 
-    /// <summary>
-    /// Counts the number of words in the content.
-    /// </summary>
-    /// <param name="content">The content to count words in</param>
-    /// <returns>The number of words</returns>
     private static int CountWords(string content)
     {
         return content.Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    /// <summary>
+    /// Result of file summarization.
+    /// </summary>
+    public class FileSummaryResult
+    {
+        public string FilePath { get; set; } = string.Empty;
+        public string Summary { get; set; } = string.Empty;
+        public int WordCount { get; set; }
+        public int LineCount { get; set; }
+        public int CharacterCount { get; set; }
     }
 }
